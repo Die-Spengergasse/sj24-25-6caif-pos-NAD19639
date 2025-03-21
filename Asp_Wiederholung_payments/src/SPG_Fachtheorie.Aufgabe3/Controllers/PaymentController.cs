@@ -1,70 +1,134 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using SPG_Fachtheorie.Aufgabe1.Infrastructure;
+using SPG_Fachtheorie.Aufgabe1.Model;
+using SPG_Fachtheorie.Aufgabe3.Commands;
+using SPG_Fachtheorie.Aufgabe3.Dtos;
 
-[Route("api/payments")]
-[ApiController]
-public class PaymentsController : ControllerBase
+namespace SPG_Fachtheorie.Aufgabe3.Controllers
 {
-    private static List<PaymentDetailDto> payments = new List<PaymentDetailDto>
+    [Route("api/[controller]")]  // --> api/payments
+    [ApiController]
+    public class PaymentsController : ControllerBase
     {
-        new PaymentDetailDto
+        private readonly AppointmentContext _db;
+
+        public PaymentsController(AppointmentContext db)
         {
-            Id = 1,
-            EmployeeFirstName = "Max",
-            EmployeeLastName = "Mustermann",
-            CashDeskNumber = 3,
-            PaymentType = "Credit Card",
-            PaymentItems = new List<PaymentItemDto>
-            {
-                new PaymentItemDto { ArticleName = "Apple", Amount = 2, Price = 1.5m },
-                new PaymentItemDto { ArticleName = "Milk", Amount = 1, Price = 2.0m }
-            }
-        },
-        new PaymentDetailDto
-        {
-            Id = 2,
-            EmployeeFirstName = "Lisa",
-            EmployeeLastName = "Müller",
-            CashDeskNumber = 1,
-            PaymentType = "Cash",
-            PaymentItems = new List<PaymentItemDto>
-            {
-                new PaymentItemDto { ArticleName = "Bread", Amount = 3, Price = 1.2m }
-            }
+            _db = db;
         }
-    };
 
-    // GET /api/payments
-    [HttpGet]
-    public ActionResult<IEnumerable<PaymentDto>> GetPayments([FromQuery] int? cashDesk, [FromQuery] DateTime? dateFrom)
-    {
-        var result = payments
-            .Where(p => !cashDesk.HasValue || p.CashDeskNumber == cashDesk.Value)
-            .Select(p => new PaymentDto
-            {
-                Id = p.Id,
-                EmployeeFirstName = p.EmployeeFirstName,
-                EmployeeLastName = p.EmployeeLastName,
-                CashDeskNumber = p.CashDeskNumber,
-                PaymentType = p.PaymentType,
-                TotalAmount = p.PaymentItems.Sum(i => i.Price * i.Amount)
-            })
-            .ToList();
-
-        return Ok(result);
-    }
-
-    // GET /api/payments/{id}
-    [HttpGet("{id}")]
-    public ActionResult<PaymentDetailDto> GetPaymentById(int id)
-    {
-        var payment = payments.FirstOrDefault(p => p.Id == id);
-        if (payment == null)
+        /// <summary>
+        /// GET /api/payments
+        /// GET /api/payments?cashDesk=1
+        /// GET /api/payments?dateFrom=2024-05-13
+        /// GET /api/payments?dateFrom=2024-05-13&cashDesk=1
+        /// </summary>
+        [HttpGet]
+        public ActionResult<List<PaymentDto>> GetAllPayments(
+            [FromQuery] int? cashDesk,
+            [FromQuery] DateTime? dateFrom)
         {
-            return NotFound();
+            var payments = _db.Payments
+                .Where(p => (!cashDesk.HasValue || p.CashDesk.Number == cashDesk.Value)
+                         && (!dateFrom.HasValue || p.PaymentDateTime >= dateFrom.Value))
+                .Select(p => new PaymentDto(
+                    p.Id, p.Employee.FirstName, p.Employee.LastName,
+                    p.PaymentDateTime,
+                    p.CashDesk.Number, p.PaymentType.ToString(),
+                    p.PaymentItems.Sum(pi => pi.Price)))
+                .ToList();
+            return Ok(payments);
         }
-        return Ok(payment);
+
+        /// <summary>
+        /// GET /api/payments/{id}
+        /// </summary>
+        /// <param name="id"></param>
+        /// <returns></returns>
+        [HttpGet("{id}")]
+        public ActionResult<PaymentDetailDto> GetPaymentById(int id)
+        {
+            var payment = _db.Payments
+                .Where(p => p.Id == id)
+                .Select(p => new PaymentDetailDto(
+                    p.Id, p.Employee.FirstName, p.Employee.LastName,
+                    p.CashDesk.Number, p.PaymentType.ToString(),
+                    p.PaymentItems
+                        .Select(pi => new PaymentItemDto(
+                            pi.ArticleName, pi.Amount, pi.Price))
+                        .ToList()))
+                .FirstOrDefault();
+            if (payment is null) return NotFound();
+            return Ok(payment);
+        }
+
+        [HttpPost]
+        [ProducesResponseType(StatusCodes.Status201Created)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public IActionResult AddPayment([FromBody] NewPaymentCommand cmd)
+        {
+            // Löse die foreign keys auf.
+            var cashDesk = _db.CashDesks
+                .FirstOrDefault(c => c.Number == cmd.CashDeskNumber);
+            if (cashDesk is null) return Problem("Invalid cashdesk", statusCode: 400);
+            var employee = _db.Employees
+                .FirstOrDefault(e => e.RegistrationNumber == cmd.EmployeeRegistrationNumber);
+            if (employee is null) return Problem("Invalid employee", statusCode: 400);
+            // Erzeuge die Modelklasse
+            var paymentType = Enum.Parse<PaymentType>(cmd.PaymentType);
+            var payment = new Payment(
+                cashDesk, cmd.PaymentDateTime, employee, paymentType);
+            _db.Payments.Add(payment);
+            try
+            {
+                // Führe das INSERT INTO durch.
+                _db.SaveChanges();
+            }
+            catch (DbUpdateException e)
+            {
+                return Problem(e.InnerException?.Message ?? e.Message, statusCode: 400);
+            }
+            return CreatedAtAction(nameof(AddPayment), new { payment.Id });
+        }
+
+        /// <summary>
+        /// DELETE /api/payments/{id}?deleteItems=true|false
+        /// Löscht ein Payment. Falls deleteItems=false oder nicht gesetzt ist und es PaymentItems gibt,
+        /// wird eine 400 Bad Request zurückgegeben.
+        /// </summary>
+        [HttpDelete("{id}")]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public IActionResult DeletePayment(int id, [FromQuery] bool deleteItems = false)
+        {
+            var payment = _db.Payments
+                .Include(p => p.PaymentItems)
+                .FirstOrDefault(p => p.Id == id);
+
+            if (payment is null)
+            {
+                return NotFound();
+            }
+
+            if (payment.PaymentItems.Any() && !deleteItems)
+            {
+                return Problem("Payment has payment items.", statusCode: 400);
+            }
+
+            // Löschen der Payment Items, falls deleteItems=true gesetzt ist
+            if (deleteItems)
+            {
+                _db.PaymentItems.RemoveRange(payment.PaymentItems);
+            }
+
+            // Löschen des Payments
+            _db.Payments.Remove(payment);
+            _db.SaveChanges();
+
+            return NoContent();
+        }
     }
 }

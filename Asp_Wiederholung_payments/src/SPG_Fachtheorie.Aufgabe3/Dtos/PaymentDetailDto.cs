@@ -1,9 +1,10 @@
-﻿public class PaymentDetailDto
+﻿namespace SPG_Fachtheorie.Aufgabe3.Dtos
 {
-    public int Id { get; set; }
-    public string EmployeeFirstName { get; set; }
-    public string EmployeeLastName { get; set; }
-    public int CashDeskNumber { get; set; }
-    public string PaymentType { get; set; }
-    public List<PaymentItemDto> PaymentItems { get; set; } = new List<PaymentItemDto>();
+    public record PaymentDetailDto(
+        int Id, string EmployeeFirstName, string EmployeeLastName,
+        int CashDeskNumber, string PaymentType,
+        List<PaymentItemDto> PaymentItems);
+
+    public record PaymentItemDto(
+        string ArticleName, int Amount, decimal Price);
 }
