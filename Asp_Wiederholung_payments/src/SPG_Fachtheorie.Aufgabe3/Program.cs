@@ -15,6 +15,8 @@ public class Program
         builder.Services.AddControllers();
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
+        builder.Services.AddScoped<PaymentService>();
+
 
         var app = builder.Build();
 
