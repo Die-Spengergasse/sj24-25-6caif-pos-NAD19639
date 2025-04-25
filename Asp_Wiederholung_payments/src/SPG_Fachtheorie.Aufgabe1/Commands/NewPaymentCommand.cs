@@ -1,16 +1,14 @@
+﻿using SPG_Fachtheorie.Aufgabe1.Model;
+using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using SPG_Fachtheorie.Aufgabe1.Model;
 
-namespace SPG_Fachtheorie.Aufgabe1.Commands;
-
-public class NewPaymentCommand
+namespace SPG_Fachtheorie.Aufgabe1.Commands
 {
-    [Required]
-    public int CashDeskNumber { get; set; }
-
-    [Required]
-    public int EmployeeId { get; set; }
-
-    [Required]
-    public PaymentType PaymentType { get; set; }
+    public record NewPaymentCommand(
+        [Range(1, int.MaxValue, ErrorMessage = "Invalid cashdesk number." )]
+        int CashDeskNumber,
+        string PaymentType,
+        [Range(1, int.MaxValue, ErrorMessage = "Invalid EmployeeRegistrationNumber." )]
+        int EmployeeRegistrationNumber);
 }
