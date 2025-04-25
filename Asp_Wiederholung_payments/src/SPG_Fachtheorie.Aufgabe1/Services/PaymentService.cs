@@ -1,108 +1,124 @@
-﻿using System;
-using System.Linq;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using SPG_Fachtheorie.Aufgabe1.Commands;
 using SPG_Fachtheorie.Aufgabe1.Infrastructure;
 using SPG_Fachtheorie.Aufgabe1.Model;
-using SPG_Fachtheorie.Aufgabe1.Commands;
-using SPG_Fachtheorie.Aufgabe1.Exeptions;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
-public class PaymentService
+namespace SPG_Fachtheorie.Aufgabe1.Services
 {
-    private readonly AppointmentContext _context;
-
-    public PaymentService(AppointmentContext context)
+    public class PaymentService
     {
-        _context = context;
-    }
+        private readonly AppointmentContext _db;
 
-    public Payment CreatePayment(NewPaymentCommand cmd)
-    {
-        // Prüfe, ob es bereits ein offenes Payment (nicht confirmed) für den CashDesk gibt.
-        var openPayments = _context.Payments
-            .Where(p => p.CashDesk.Number == cmd.CashDeskNumber && p.Confirmed == null);
-        if (openPayments.Any())
+        public PaymentService(AppointmentContext db)
         {
-            throw new PaymentServiceException("Open payment for cashdesk.");
+            _db = db;
         }
 
-        // Ermittle den CashDesk
-        var cashDesk = _context.CashDesks.Find(cmd.CashDeskNumber);
-        if (cashDesk == null)
+        public IQueryable<Payment> Payments => _db.Payments.AsQueryable();
+        public Payment CreatePayment(NewPaymentCommand cmd)
         {
-            throw new PaymentServiceException("CashDesk not found.");
+            // Löse die foreign keys auf.
+            var cashDesk = _db.CashDesks
+                .FirstOrDefault(c => c.Number == cmd.CashDeskNumber);
+            if (cashDesk is null)
+                throw new PaymentServiceException("Invalid cashdesk");
+            var employee = _db.Employees
+                .FirstOrDefault(e => e.RegistrationNumber == cmd.EmployeeRegistrationNumber);
+            if (employee is null)
+                throw new PaymentServiceException("Invalid employee");
+            if (_db.Payments.Any(p => p.CashDesk.Number == cmd.CashDeskNumber && p.Confirmed == null))
+                throw new PaymentServiceException("Open payment for cashdesk.");
+            if (cmd.PaymentType == "CreditCard" && employee.Type != "Manager")
+                throw new PaymentServiceException("Insufficient rights to create a credit card payment.");
+
+            // Erzeuge die Modelklasse
+            var paymentType = Enum.Parse<PaymentType>(cmd.PaymentType);
+            var payment = new Payment(cashDesk, DateTime.UtcNow, employee, paymentType);
+            _db.Payments.Add(payment);
+            SaveOrThrow();
+            return payment;
         }
 
-        // Ermittle den Employee anhand der EmployeeId
-        var employee = _context.Employees.FirstOrDefault(e => e.RegistrationNumber == cmd.EmployeeId);
-        if (employee == null)
+        public void ConfirmPayment(int paymentId)
         {
-            throw new PaymentServiceException("Employee not found.");
+            var payment = _db.Payments.FirstOrDefault(p => p.Id == paymentId);
+            if (payment is null)
+                throw new PaymentServiceException("Payment not found")
+                { IsNotFoundError = true };
+            if (payment.Confirmed.HasValue)
+                throw new PaymentServiceException("Payment already confirmed");
+
+            payment.Confirmed = DateTime.UtcNow;
+            SaveOrThrow();
         }
 
-        // Falls der PaymentType CreditCard ist, muss der Employee vom Typ "Manager" sein.
-        if (cmd.PaymentType == PaymentType.CreditCard && employee.Type != "Manager")
+        public void AddPaymentItem(NewPaymentItemCommand cmd)
         {
-            throw new PaymentServiceException("Insufficient rights to create a credit card payment.");
+            var payment = _db.Payments.FirstOrDefault(p => p.Id == cmd.PaymentId);
+            if (payment is null)
+                throw new PaymentServiceException("Payment not found.");
+            if (payment.Confirmed.HasValue)
+                throw new PaymentServiceException("Payment already confirmed.");
+            var paymentItem = new PaymentItem(
+                cmd.ArticleName, cmd.Amount, cmd.Price, payment);
+            _db.PaymentItems.Add(paymentItem);
+            SaveOrThrow();
         }
 
-        // Neues Payment mit dem vorhandenen Konstruktor anlegen
-        var payment = new Payment(cashDesk, DateTime.UtcNow, employee, cmd.PaymentType)
+        public void DeletePayment(int paymentId, bool deleteItems)
         {
-            Confirmed = null
-            // PaymentItems wird nicht gesetzt, da es in der Klasse als readonly initialisiert wird.
-        };
+            var payment = _db.Payments.FirstOrDefault(p => p.Id == paymentId);
+            if (payment is null)
+                throw new PaymentServiceException("Payment not found.")
+                { IsNotFoundError = true };
 
-        _context.Payments.Add(payment);
-        _context.SaveChanges();
-        return payment;
-    }
+            var paymentItems = _db.PaymentItems
+                .Where(p => p.Payment.Id == paymentId)
+                .ToList();
 
-    public void ConfirmPayment(int paymentId)
-    {
-        var payment = _context.Payments.Find(paymentId);
-        if (payment == null)
-        {
-            throw new PaymentServiceException("Payment not found.");
+            if (deleteItems)
+            {
+                try
+                {
+                    _db.PaymentItems.RemoveRange(paymentItems);
+                    _db.SaveChanges();
+                }
+                catch (DbUpdateException e)
+                {
+                    throw new PaymentServiceException(e.InnerException?.Message ?? e.Message);
+                }
+            }
+            else
+            {
+                if (paymentItems.Any())
+                    throw new PaymentServiceException("Payment has payment items.");
+            }
+            try
+            {
+                _db.Payments.Remove(payment);
+                _db.SaveChanges();
+            }
+            catch (DbUpdateException e)
+            {
+                throw new PaymentServiceException(e.InnerException?.Message ?? e.Message);
+            }
         }
-        if (payment.Confirmed != null)
-        {
-            throw new PaymentServiceException("Payment already confirmed.");
-        }
-        payment.Confirmed = DateTime.UtcNow;
-        _context.SaveChanges();
-    }
 
-    public void AddPaymentItem(NewPaymentItemCommand cmd)
-    {
-        var payment = _context.Payments.Find(cmd.PaymentId);
-        if (payment == null)
+        private void SaveOrThrow()
         {
-            throw new PaymentServiceException("Payment not found.");
+            try
+            {
+                _db.SaveChanges();
+            }
+            catch (DbUpdateException e)
+            {
+                throw new PaymentServiceException(e.InnerException?.Message ?? e.Message);
+            }
         }
-        if (payment.Confirmed != null)
-        {
-            throw new PaymentServiceException("Payment already confirmed.");
-        }
-        // PaymentItem wird über den vorhandenen Konstruktor erstellt.
-        var paymentItem = new PaymentItem(cmd.ArticleName, cmd.Amount, cmd.Price, payment);
-
-        _context.PaymentItems.Add(paymentItem);
-        _context.SaveChanges();
-    }
-
-    public void DeletePayment(int paymentId, bool deleteItems)
-    {
-        var payment = _context.Payments.Include(p => p.PaymentItems)
-                                       .FirstOrDefault(p => p.Id == paymentId);
-        if (payment == null)
-        {
-            throw new PaymentServiceException("Payment not found.");
-        }
-        if (deleteItems)
-        {
-            _context.PaymentItems.RemoveRange(payment.PaymentItems);
-        }
-        _context.Payments.Remove(payment);
-        _context.SaveChanges();
     }
 }
