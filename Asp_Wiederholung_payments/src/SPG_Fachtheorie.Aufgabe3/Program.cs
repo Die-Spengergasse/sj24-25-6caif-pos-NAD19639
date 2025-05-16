@@ -35,5 +35,7 @@ public class Program
         }
         app.MapControllers();
         app.Run();
+
     }
 }
+public partial class Program { }
